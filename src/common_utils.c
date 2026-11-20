@@ -151,7 +151,19 @@ uint32_t WavpackGetNumSamples (WavpackContext *wpc)
 
 int64_t WavpackGetNumSamples64 (WavpackContext *wpc)
 {
-    return wpc ? wpc->total_samples : -1;
+    if (!wpc)
+        return -1;
+
+#ifdef ENABLE_DSD
+    // for DSD data opened as PCM with a non-default output rate, report the number of
+    // PCM frames the application will actually receive (the partial trailing output
+    // period, if any, does not form a complete PCM sample and is therefore not counted)
+
+    if (wpc->decimation_context && wpc->total_samples != -1)
+        return wpc->total_samples / (int64_t) dsd_pcm_decimation (wpc);
+#endif
+
+    return wpc->total_samples;
 }
 
 // Get the current sample index position, or -1 if unknown
@@ -167,12 +179,22 @@ int64_t WavpackGetSampleIndex64 (WavpackContext *wpc)
 #ifdef ENABLE_LEGACY
         if (wpc->stream3)
             return get_sample_index3 (wpc);
-        else if (wpc->streams && wpc->streams [0])
-            return wpc->streams [0]->sample_index;
+        else if (wpc->streams && wpc->streams [0]) {
 #else
-        if (wpc->streams && wpc->streams [0])
-            return wpc->streams [0]->sample_index;
+        if (wpc->streams && wpc->streams [0]) {
 #endif
+#ifdef ENABLE_DSD
+            // DSD data opened as PCM: report the number of PCM frames actually delivered. A
+            // dedicated counter is required because the DSD byte position may sit inside a
+            // partial output period, in which case a plain division would lag the true position
+
+            if (wpc->decimation_context && dsd_pcm_decimation (wpc) > 1)
+                return wpc->dsd_pcm_sample_index;
+            else if (wpc->decimation_context)
+                return wpc->streams [0]->sample_index;
+#endif
+            return wpc->streams [0]->sample_index;
+        }
     }
 
     return -1;
@@ -199,7 +221,7 @@ int WavpackLossyBlocks (WavpackContext *wpc)
 double WavpackGetProgress (WavpackContext *wpc)
 {
     if (wpc && wpc->total_samples != -1 && wpc->total_samples != 0)
-        return (double) WavpackGetSampleIndex64 (wpc) / wpc->total_samples;
+        return (double) WavpackGetSampleIndex64 (wpc) / (double) WavpackGetNumSamples64 (wpc);
     else
         return -1.0;
 }
@@ -238,9 +260,18 @@ static int64_t actual_total_samples (WavpackContext *wpc)
 double WavpackGetRatio (WavpackContext *wpc)
 {
     if (wpc && actual_total_samples (wpc) != -1 && wpc->filelen) {
-        double output_size = (double) actual_total_samples (wpc) * wpc->config.num_channels *
-            wpc->config.bytes_per_sample;
-        double input_size = (double) wpc->filelen + wpc->file2len;
+        int64_t total_samples = actual_total_samples (wpc);
+        double output_size, input_size = (double) wpc->filelen + wpc->file2len;
+
+#ifdef ENABLE_DSD
+        // the reported PCM frame count and PCM rate are both divided by R, so the
+        // represented source time is unchanged; undo that for the raw size comparison
+
+        if (wpc->decimation_context)
+            total_samples *= (int64_t) dsd_pcm_decimation (wpc);
+#endif
+
+        output_size = (double) total_samples * wpc->config.num_channels * wpc->config.bytes_per_sample;
 
         if (output_size >= 1.0 && input_size >= 1.0)
             return input_size / output_size;
@@ -277,9 +308,19 @@ double WavpackGetInstantBitrate (WavpackContext *wpc)
         return WavpackGetAverageBitrate (wpc, TRUE);
 
     if (wpc && wpc->streams && wpc->streams [0] && wpc->streams [0]->wphdr.block_samples && WavpackGetSampleRate (wpc)) {
-        double output_time = (double) wpc->streams [0]->wphdr.block_samples / WavpackGetSampleRate (wpc);
-        double input_size = 0;
+        double block_samples = (double) wpc->streams [0]->wphdr.block_samples;
+        double output_time, input_size = 0;
         int si;
+
+#ifdef ENABLE_DSD
+        // block_samples is in the DSD domain; convert to the reported PCM domain so that
+        // the division by WavpackGetSampleRate() yields the real time span of the block
+
+        if (wpc->decimation_context)
+            block_samples /= (double) dsd_pcm_decimation (wpc);
+#endif
+
+        output_time = block_samples / WavpackGetSampleRate (wpc);
 
         for (si = 0; si < wpc->num_streams; ++si) {
             if (wpc->streams [si]->blockbuff)
@@ -470,7 +511,24 @@ void WavpackFreeWrapper (WavpackContext *wpc)
 
 uint32_t WavpackGetSampleRate (WavpackContext *wpc)
 {
-    return wpc ? (wpc->dsd_multiplier ? wpc->config.sample_rate * wpc->dsd_multiplier : wpc->config.sample_rate) : 44100;
+    if (!wpc)
+        return 44100;
+
+    if (wpc->dsd_multiplier) {
+        uint32_t byte_rate = wpc->config.sample_rate * wpc->dsd_multiplier;
+
+#ifdef ENABLE_DSD
+        // DSD data opened as PCM: report the actual PCM output rate (identical to the
+        // default DSD byte rate unless a lower rate was configured)
+
+        if (wpc->decimation_context)
+            return byte_rate / dsd_pcm_decimation (wpc);
+#endif
+
+        return byte_rate;
+    }
+
+    return wpc->config.sample_rate;
 }
 
 // Returns the native sample rate of the specified WavPack file

@@ -122,6 +122,7 @@
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
 /export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackSetDSDPCMSampleRate /export:WavpackGetDSDPCMSampleRate
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock
@@ -180,6 +181,7 @@
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
 /export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackSetDSDPCMSampleRate /export:WavpackGetDSDPCMSampleRate
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock
@@ -238,6 +240,7 @@
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
 /export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackSetDSDPCMSampleRate /export:WavpackGetDSDPCMSampleRate
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock
@@ -301,6 +304,7 @@
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
 /export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackSetDSDPCMSampleRate /export:WavpackGetDSDPCMSampleRate
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock

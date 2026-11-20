@@ -331,6 +331,21 @@ WavpackContext *WavpackOpenFileInput (const char *infilename, char *error, int f
                                 // (just affects retrieving wrappers & MD5 checksums)
 #define OPEN_NO_CHECKSUM 0x800  // don't verify block checksums before decoding
 
+// When a DSD file is opened with OPEN_DSD_AS_PCM the default PCM sample rate is the
+// DSD "byte" rate (i.e. the native 1-bit rate divided by 8), which means that every
+// decimated DSD byte becomes one PCM sample. An application may instead request a lower
+// PCM output sample rate by calling WavpackSetDSDPCMSampleRate() right after the file is
+// opened (and before any samples are decoded). The requested rate must be a positive
+// integer divisor of the default rate, so that the new rate represents an exact, time
+// proportional downsampling of the DSD source. The mapping between DSD time and PCM time
+// is independent of block boundaries, channel counts, and how many samples are requested
+// per call, which means that chunked decoding, seeking and continuous reads all produce
+// the same sample timeline (and any trailing DSD bytes that do not complete a full PCM
+// output period are simply carried forward, never dropped or duplicated).
+
+int WavpackSetDSDPCMSampleRate (WavpackContext *wpc, uint32_t sample_rate);
+uint32_t WavpackGetDSDPCMSampleRate (WavpackContext *wpc);
+
 // new for multithreaded
 
 #define OPEN_THREADS_SHFT 12     // specify number of additional worker threads here for

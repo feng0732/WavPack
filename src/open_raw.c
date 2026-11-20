@@ -326,8 +326,18 @@ WavpackContext *WavpackOpenRawDecoder (
 
 uint32_t WavpackGetNumSamplesInFrame (WavpackContext *wpc)
 {
-    if (wpc && wpc->streams && wpc->streams [0])
-        return wpc->streams [0]->wphdr.block_samples;
+    if (wpc && wpc->streams && wpc->streams [0]) {
+        uint32_t block_samples = wpc->streams [0]->wphdr.block_samples;
+
+#ifdef ENABLE_DSD
+        // translate the DSD block length to the number of PCM frames delivered at the current rate
+
+        if (wpc->decimation_context)
+            block_samples /= dsd_pcm_decimation (wpc);
+#endif
+
+        return block_samples;
+    }
     else
         return -1;
 }

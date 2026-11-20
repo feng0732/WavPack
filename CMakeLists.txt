@@ -291,6 +291,7 @@ set(WAVPACK_EXPORT_SYMBOLS
     WavpackGetSampleIndex
     WavpackGetSampleIndex64
     WavpackGetSampleRate
+    WavpackGetDSDPCMSampleRate
     WavpackGetTagItem
     WavpackGetTagItemIndexed
     WavpackGetVersion
@@ -314,6 +315,7 @@ set(WAVPACK_EXPORT_SYMBOLS
     WavpackSetChannelLayout
     WavpackSetConfiguration
     WavpackSetConfiguration64
+    WavpackSetDSDPCMSampleRate
     WavpackSetFileInformation
     WavpackStoreMD5Sum
     WavpackUnpackSamples

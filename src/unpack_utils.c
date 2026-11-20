@@ -109,8 +109,15 @@ static void unpack_samples_interleave (WavpackStream *wps, int32_t *outbuf, int 
 // unpacked is returned, which should be equal to the number requested unless
 // the end of file is encountered or an error occurs. After all samples have
 // been unpacked then 0 will be returned.
+//
+// This is the "native" core: sample counts and positions are in the file's own
+// sample domain (which for DSD data means the DSD byte-rate domain, even when
+// the data is returned as decimated PCM). WavpackUnpackSamples() wraps it to
+// implement the optional, non-default DSD PCM output sample rate.
 
-uint32_t WavpackUnpackSamples (WavpackContext *wpc, int32_t *buffer, uint32_t samples)
+#define DSD_DECODE_CHUNK 131072       // max DSD frames decoded into the temporary buffer at once
+
+uint32_t unpack_samples_native (WavpackContext *wpc, int32_t *buffer, uint32_t samples)
 {
     int num_channels = wpc->config.num_channels, file_done = FALSE;
     uint32_t bcount, samples_unpacked = 0, samples_to_unpack;
@@ -479,6 +486,90 @@ uint32_t WavpackUnpackSamples (WavpackContext *wpc, int32_t *buffer, uint32_t sa
 #endif
 
     return samples_unpacked;
+}
+
+// Public unpack entry point. For every decoder except a DSD-as-PCM decoder with a non-default
+// output rate this simply calls the native core, so the original behavior and output are
+// unchanged. Otherwise the requested PCM frame count is translated into the DSD time domain
+// (PCM frame p corresponds to DSD byte-frame p * R), the DSD data is decoded through the normal
+// path (including the FIR decimation), and the position-exact second decimation stage keeps only
+// the outputs that land on the requested rate. The translation is based solely on absolute sample
+// positions, so chunked reads, seeks and continuous decoding all share one consistent timeline and
+// cannot drift across block boundaries, channel layouts, or a partial final output period.
+
+uint32_t WavpackUnpackSamples (WavpackContext *wpc, int32_t *buffer, uint32_t samples)
+{
+#ifdef ENABLE_DSD
+    uint32_t R;
+
+    if (wpc->decimation_context && (R = dsd_pcm_decimation (wpc)) > 1) {
+        int num_channels = wpc->reduced_channels ? wpc->reduced_channels : wpc->config.num_channels;
+        uint32_t pcm_wanted = samples, pcm_delivered = 0;
+        int64_t pcm_cap = (wpc->total_samples != -1) ?
+            (wpc->total_samples / (int64_t) R) - wpc->dsd_pcm_sample_index : -1;
+
+        memset (buffer, 0, (size_t) num_channels * samples * sizeof (int32_t));
+
+        while (pcm_delivered < pcm_wanted) {
+            // work on at most the number of PCM frames still outstanding: a decimator cannot
+            // produce more outputs than inputs, so this also bounds the temporary buffer, and a
+            // request smaller than one DSD period simply consumes a partial period's worth of
+            // DSD frames and carries the rest forward on the next call
+
+            uint32_t dsd_chunk = pcm_wanted - pcm_delivered;
+            uint32_t frames_got, frames_kept;
+            int32_t *tmpbuf;
+
+            if (dsd_chunk > DSD_DECODE_CHUNK)
+                dsd_chunk = DSD_DECODE_CHUNK;
+
+            // never emit more PCM frames than floor(total DSD frames / R); this is what keeps a
+            // trailing partial output period from producing an extra, non-existent final sample
+
+            if (pcm_cap >= 0 && dsd_chunk > (uint32_t) (pcm_cap - (int64_t) pcm_delivered))
+                dsd_chunk = (uint32_t) (pcm_cap - (int64_t) pcm_delivered);
+
+            if (!dsd_chunk)
+                break;
+
+            tmpbuf = (int32_t *) malloc ((size_t) dsd_chunk * num_channels * sizeof (int32_t));
+
+            if (!tmpbuf) {
+                strcpy (wpc->error_message, "can't allocate memory for DSD decimation!");
+                break;
+            }
+
+            frames_got = unpack_samples_native (wpc, tmpbuf, dsd_chunk);
+
+            if (!frames_got) {
+                free (tmpbuf);
+                break;      // end of file (or fatal error); whatever was already delivered stays valid
+            }
+
+            frames_kept = dsd_pcm_downsample (wpc, tmpbuf, frames_got, num_channels);
+
+            if (pcm_delivered + frames_kept > pcm_wanted)
+                frames_kept = pcm_wanted - pcm_delivered;
+
+            memcpy (buffer + (size_t) pcm_delivered * num_channels, tmpbuf,
+                (size_t) frames_kept * num_channels * sizeof (int32_t));
+
+            free (tmpbuf);
+            pcm_delivered += frames_kept;
+
+            // fewer frames than asked means the DSD source is exhausted; there is no more data
+            // that could produce another PCM frame on a subsequent iteration
+
+            if (frames_got < dsd_chunk)
+                break;
+        }
+
+        wpc->dsd_pcm_sample_index += pcm_delivered;
+        return pcm_delivered;
+    }
+#endif
+
+    return unpack_samples_native (wpc, buffer, samples);
 }
 
 ///////////////////////////// multithreading code ////////////////////////////////

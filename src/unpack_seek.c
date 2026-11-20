@@ -41,9 +41,33 @@ int WavpackSeekSample64 (WavpackContext *wpc, int64_t sample)
     uint32_t bcount, samples_to_skip;
 #ifdef ENABLE_DSD
     uint32_t samples_to_decode = 0;
+    uint32_t dsd_decimation = 1;
+    int64_t pcm_target = 0;     // requested PCM frame, remembered while the DSD-domain seek is performed
 #endif
     int stream_index = 0;
     int32_t *buffer;
+
+#ifdef ENABLE_DSD
+    // The seek position is specified in the domain exposed to the application. DSD data opened
+    // as PCM with a non-default rate is addressed by PCM frame, so validate against the number
+    // of PCM frames before translating to the DSD byte-frame domain. The translation is exact
+    // (PCM frame p -> DSD frame p * R), which keeps seeks sample-accurate against both
+    // continuous and chunked reads.
+
+    if (wpc->decimation_context) {
+        dsd_decimation = dsd_pcm_decimation (wpc);
+        pcm_target = sample;
+
+        // valid PCM frame indices are [0, total DSD frames / R); a trailing partial output
+        // period cannot be addressed, so the first index at (or past) it is also rejected
+
+        if (wpc->total_samples != -1 &&
+            sample >= wpc->total_samples / (int64_t) dsd_decimation)
+                return FALSE;
+
+        sample *= (int64_t) dsd_decimation;
+    }
+#endif
 
     if (wpc->total_samples == -1 || sample >= wpc->total_samples ||
         !wpc->reader->can_seek (wpc->wv_in) || (wpc->open_flags & OPEN_STREAMING) ||
@@ -57,13 +81,21 @@ int WavpackSeekSample64 (WavpackContext *wpc, int64_t sample)
 
 #ifdef ENABLE_DSD
     if (wpc->decimation_context) {      // the decimation code needs some context to be sample accurate
-        if (sample < 16) {
+        // With a non-default rate the backup distance must stay aligned to the decimation factor,
+        // otherwise the primed decoder would land inside a partial output period and the seeked
+        // PCM timeline would be offset from a continuous read. Round the 16-frame warmup up to
+        // the next multiple of R.
+
+        uint32_t priming = (dsd_decimation > 1) ?
+            (((16 + dsd_decimation - 1) / dsd_decimation) * dsd_decimation) : 16;
+
+        if (sample < (int64_t) priming) {
             samples_to_decode = (uint32_t) sample;
             sample = 0;
         }
         else {
-            samples_to_decode = 16;
-            sample -= 16;
+            samples_to_decode = priming;
+            sample -= priming;
         }
     }
 #endif
@@ -236,8 +268,31 @@ int WavpackSeekSample64 (WavpackContext *wpc, int64_t sample)
     }
 
 #ifdef ENABLE_DSD
-    if (wpc->decimation_context)
+    if (wpc->decimation_context) {
         decimate_dsd_reset (wpc->decimation_context);
+
+        if (dsd_decimation > 1) {
+            // The DSD decoder now sits exactly "priming" DSD frames before the requested output
+            // boundary. Warm up the FIR decimation through the native core so that no PCM frames
+            // are delivered or counted, then publish the requested PCM frame as the current
+            // position with a zero residual phase (the first emitted frame is therefore PCM
+            // frame pcm_target, matching what continuous and chunked reads would produce).
+
+            if (samples_to_decode) {
+                buffer = (int32_t *)calloc (1, samples_to_decode * wpc->config.num_channels * 4);
+
+                if (buffer) {
+                    unpack_samples_native (wpc, buffer, samples_to_decode);
+                    free (buffer);
+                }
+
+                samples_to_decode = 0;
+            }
+
+            wpc->dsd_pcm_phase = 0;
+            wpc->dsd_pcm_sample_index = pcm_target;
+        }
+    }
 
     if (samples_to_decode) {
         buffer = (int32_t *)calloc (1, samples_to_decode * wpc->config.num_channels * 4);

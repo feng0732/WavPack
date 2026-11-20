@@ -23,6 +23,8 @@
 ++'WavpackCloseFile'.'wavpack.dll'.'WavpackCloseFile'
 ++'WavpackGetSampleRate'.'wavpack.dll'.'WavpackGetSampleRate'
 ++'WavpackGetNativeSampleRate'.'wavpack.dll'.'WavpackGetNativeSampleRate'
+++'WavpackSetDSDPCMSampleRate'.'wavpack.dll'.'WavpackSetDSDPCMSampleRate'
+++'WavpackGetDSDPCMSampleRate'.'wavpack.dll'.'WavpackGetDSDPCMSampleRate'
 ++'WavpackGetBitsPerSample'.'wavpack.dll'.'WavpackGetBitsPerSample'
 ++'WavpackGetBytesPerSample'.'wavpack.dll'.'WavpackGetBytesPerSample'
 ++'WavpackGetNumChannels'.'wavpack.dll'.'WavpackGetNumChannels'

@@ -696,4 +696,113 @@ void decimate_dsd_destroy (void *decimate_context)
     free (context);
 }
 
+/*------------------------------------------------------------------------------------------------------------------------*/
+
+// Optional PCM output sample rate support. When a DSD file is opened with OPEN_DSD_AS_PCM the
+// default decimation factor is 1 (every FIR output is returned). An application may request a
+// lower PCM rate by specifying an integer divisor of the DSD "byte" rate, which installs the
+// additional position-exact decimation stage implemented below.
+
+// Return the active DSD-to-PCM decimation factor R. A factor of 1 means the default output rate
+// (the DSD byte rate), which preserves the original behavior exactly.
+
+uint32_t dsd_pcm_decimation (WavpackContext *wpc)
+{
+    return (wpc && wpc->dsd_decimation) ? wpc->dsd_decimation : 1;
+}
+
+// Configure the PCM output sample rate of a DSD file that was opened with OPEN_DSD_AS_PCM. The
+// requested rate must be a positive integer divisor of the default DSD byte rate (reported by
+// WavpackGetSampleRate() before any change) so that the PCM timeline is an exact, time-proportional
+// subdivision of the DSD source. This must be called before any samples are decoded (or the
+// decoder repositioned). Returns TRUE on success. On failure the existing configuration is left
+// untouched, an error message is stored for WavpackGetErrorMessage(), and the decoder remains
+// valid so that decoding can continue (or the context be released with WavpackCloseFile()).
+
+int WavpackSetDSDPCMSampleRate (WavpackContext *wpc, uint32_t sample_rate)
+{
+    uint32_t byte_rate;
+    int i;
+
+    if (!wpc)
+        return FALSE;
+
+    if (!wpc->decimation_context) {
+        strcpy (wpc->error_message, "only available for DSD files opened as PCM!");
+        return FALSE;
+    }
+
+    if (wpc->streams)
+        for (i = 0; i < wpc->num_streams; ++i)
+            if (wpc->streams [i] && wpc->streams [i]->sample_index) {
+                strcpy (wpc->error_message, "can't change PCM rate after decoding started!");
+                return FALSE;
+            }
+
+    byte_rate = wpc->dsd_multiplier ? wpc->config.sample_rate * wpc->dsd_multiplier : wpc->config.sample_rate;
+
+    if (!sample_rate || byte_rate % sample_rate) {
+        strcpy (wpc->error_message, "invalid DSD PCM sample rate!");
+        return FALSE;
+    }
+
+    wpc->dsd_decimation = byte_rate / sample_rate;
+    wpc->dsd_pcm_phase = 0;
+    wpc->dsd_pcm_sample_index = 0;
+    return TRUE;
+}
+
+// Return the PCM output sample rate currently in effect for a DSD file opened as PCM, or 0 if
+// the context is not a DSD-as-PCM decoder.
+
+uint32_t WavpackGetDSDPCMSampleRate (WavpackContext *wpc)
+{
+    uint32_t byte_rate;
+
+    if (!wpc || !wpc->decimation_context)
+        return 0;
+
+    byte_rate = wpc->dsd_multiplier ? wpc->config.sample_rate * wpc->dsd_multiplier : wpc->config.sample_rate;
+    return byte_rate / dsd_pcm_decimation (wpc);
+}
+
+// Second decimation stage. The passed buffer contains the interleaved FIR-decimated frames for
+// the DSD bytes consumed by this call; the context's "phase" records the DSD position (modulo R)
+// at which the next PCM output frame is due and is advanced as frames are consumed. Frames that
+// land on an output point are kept and compacted to the start of the buffer, the others are
+// dropped. Because the phase is carried in the context and never reset by block boundaries, by
+// how many frames are requested, or by the channel layout, the resulting timeline is identical
+// for chunked decoding, seeking, and continuous reads. Any trailing DSD frames that do not
+// complete an output period simply advance the phase and carry into the next call, so no time
+// drift can accumulate (not even at the end of the file). The number of PCM frames remaining in
+// the buffer is returned.
+
+uint32_t dsd_pcm_downsample (WavpackContext *wpc, int32_t *samples, uint32_t num_frames, int num_channels)
+{
+    uint32_t R = dsd_pcm_decimation (wpc), out_frames = 0, d;
+    uint32_t phase = wpc->dsd_pcm_phase;
+    int32_t *src = samples, *dst = samples;
+
+    if (R == 1 || !num_frames)
+        return num_frames;
+
+    for (d = 0; d < num_frames; ++d) {
+        if (phase == 0) {
+            if (dst != src)
+                memmove (dst, src, (size_t) num_channels * sizeof (int32_t));
+
+            dst += num_channels;
+            out_frames++;
+        }
+
+        src += num_channels;
+
+        if (++phase == R)
+            phase = 0;
+    }
+
+    wpc->dsd_pcm_phase = phase;
+    return out_frames;
+}
+
 #endif      // ENABLE_DSD

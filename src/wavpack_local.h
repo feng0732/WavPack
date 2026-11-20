@@ -333,6 +333,13 @@ struct WavpackContext {
     unsigned char file_format, *channel_reordering, *channel_identities;
     uint32_t channel_layout, dsd_multiplier;
     void *decimation_context;
+    uint32_t dsd_decimation;      // DSD-to-PCM decimation factor R (1 = default output rate);
+                                  // only used when decimation_context is active (DSD as PCM)
+    uint32_t dsd_pcm_phase;       // DSD position (mod R) at which the next PCM output frame is due;
+                                  // carrying this between calls makes partial output periods exact
+    int64_t dsd_pcm_sample_index; // PCM frames actually delivered through the second decimation
+                                  // stage (the DSD position divided by R would lag whenever a
+                                  // partial output period is carried between calls)
     char file_extension [8];
 
 #ifdef ENABLE_THREADS
@@ -432,6 +439,14 @@ void *decimate_dsd_init (int num_channels);
 void decimate_dsd_reset (void *decimate_context);
 void decimate_dsd_run (void *decimate_context, int32_t *samples, int num_samples);
 void decimate_dsd_destroy (void *decimate_context);
+
+// optional DSD-to-PCM output sample rate support (unpack_dsd.c / open_utils.c)
+
+int WavpackSetDSDPCMSampleRate (WavpackContext *wpc, uint32_t sample_rate);
+uint32_t WavpackGetDSDPCMSampleRate (WavpackContext *wpc);
+uint32_t dsd_pcm_decimation (WavpackContext *wpc);
+uint32_t dsd_pcm_downsample (WavpackContext *wpc, int32_t *samples, uint32_t num_frames, int num_channels);
+uint32_t unpack_samples_native (WavpackContext *wpc, int32_t *buffer, uint32_t samples);
 
 ///////////////////////////////// CPU feature detection ////////////////////////////////
 
