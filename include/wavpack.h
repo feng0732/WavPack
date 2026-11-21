@@ -381,6 +381,45 @@ int WavpackGetFloatNormExp (WavpackContext *wpc);
 int WavpackGetMD5Sum (WavpackContext *wpc, unsigned char data [16]);
 void WavpackGetChannelIdentities (WavpackContext *wpc, unsigned char *identities);
 uint32_t WavpackGetChannelLayout (WavpackContext *wpc, unsigned char *reorder);
+
+// Selective channel decoding. The identities used here are exactly the same values that
+// WavpackGetChannelIdentities() reports for the file: the Microsoft standard channels are
+// numbered 1 - 18 (in Microsoft order) and any non-Microsoft channels follow with their
+// stored identities (33 - 254). A value of 0x00 is not a valid identity and 0xFF means an
+// "unknown" channel, which can never be selected.
+//
+// The caller passes the identities of the channels that should be returned by subsequent
+// calls to WavpackUnpackSamples(). The channels are always returned in the same relative
+// order that they appear in the source stream (i.e., the order of the identity list passed
+// here does not matter). Channels that are not selected are not returned at all; they do
+// not appear as silent or otherwise placeholder channels. However, all the channels in the
+// file are still fully decoded internally, so channels that are jointly encoded (stereo
+// pairs, joint stereo, cross-channel decorrelation, etc.) are not affected.
+//
+// The number of samples, the sample index/seek positions, and the reported sample count are
+// all unchanged by a selection, and the identity metadata (WavpackGetChannelIdentities())
+// reports the original identities of the selected channels. WavpackGetNumChannels(),
+// WavpackGetChannelMask(), WavpackGetReducedChannels(), and WavpackGetChannelLayout() all
+// describe the selection (i.e., the channels that will actually be returned) while a
+// selection is active.
+//
+// This must be called after the file is opened but before any samples are decoded or any
+// seeking is performed. It may be called more than once during that window to replace an
+// existing selection. A return of FALSE indicates that the selection was not accepted and,
+// in that case, "wpc" is left unchanged (a message is available from
+// WavpackGetErrorMessage()). The selection is rejected if any requested identity is missing
+// from the file, unknown (0xFF or 0), duplicated in the request, or ambiguous because the
+// file contains more than one channel with that identity. Selection is also not available
+// for legacy (< 4.0) WavPack files or when the file was opened with OPEN_2CH_MAX.
+//
+// While a selection is active, decoding a block whose channel layout (channel count, mask,
+// or channel identities) differs from the layout that the selection was based on is an
+// error: the error message is updated, WavpackGetNumErrors() is incremented, and no further
+// samples are returned (subsequent calls to WavpackUnpackSamples() return 0). Without a
+// selection this situation continues to be ignored exactly as it always was.
+
+int WavpackSetChannelSelection (WavpackContext *wpc, const unsigned char *chan_ids, int num_chan_ids);
+int WavpackGetChannelSelection (WavpackContext *wpc, unsigned char *chan_ids);
 uint32_t WavpackGetWrapperBytes (WavpackContext *wpc);
 unsigned char *WavpackGetWrapperData (WavpackContext *wpc);
 void WavpackFreeWrapper (WavpackContext *wpc);

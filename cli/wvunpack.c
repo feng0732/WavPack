@@ -60,9 +60,11 @@
 #define rename(o,n) rename_utf8(o,n)
 #define fopen(f,m) fopen_utf8(f,m)
 #define stricmp(x,y) _stricmp(x,y)
+#define stricmp_n(x,y,n) _strnicmp(x,y,n)
 #define strdup(x) _strdup(x)
 #else
 #define stricmp strcasecmp
+#define stricmp_n strncasecmp
 #endif
 
 ///////////////////////////// local variable storage //////////////////////////
@@ -101,6 +103,8 @@ static const char *usage =
 "          -q  = quiet (keep console output to a minimum)\n"
 "          -s  = display summary information only to stdout (no audio decode)\n"
 "          -ss = display super summary (including tags) to stdout (no decode)\n"
+"          --channels=<list> = decode only the specified channels (comma-separated\n"
+"                              identities, e.g., 1,3 or FL,FR,FC or 33-34)\n"
 #ifdef ENABLE_THREADS
 "          --no-threads = do not use multiple threads for faster operation\n"
 #endif
@@ -145,6 +149,8 @@ static const char *help =
 "          Philips DSDIFF:   'dff', force with --dsdiff or --dff\n"
 "          Sony DSF:         'dsf', force with --dsf\n\n"
 " Options:\n"
+"    --channels=<list>     decode only the specified channels (comma-separated)\n"
+"                           identities; e.g., 1,3,5 or FL,FR,FC or 33-36\n"
 "    --aif                 force output to Apple AIFF (extension .aif)\n"
 "    --aif-le              force output to Apple AIFF-C/sowt (extension .aif)\n"
 "    -b                    blindly decode all stream blocks & ignore length info\n"
@@ -263,6 +269,9 @@ static char *tag_extract_stdout;    // extract single tag to stdout
 static char **tag_extractions;      // extract multiple tags to named files
 static int num_tag_extractions;
 
+static unsigned char *channel_selection;    // identities of channels to decode (see --channels)
+static int num_channel_selection;
+
 #ifdef _WIN32
 static int pause_mode, drop_mode;
 #endif
@@ -271,6 +280,7 @@ static int pause_mode, drop_mode;
 
 static void add_tag_extraction_to_list (char *spec);
 static void parse_sample_time_index (struct sample_time_index *dst, char *src);
+static void parse_channel_selection (char *src);
 static int unpack_file (char *infilename, char *outfilename, int add_extension);
 static int quick_verify_file (char *infilename, int verbose);
 static void display_progress (double file_progress);
@@ -400,6 +410,14 @@ int main(int argc, char **argv)
 
                 if (!until.value_is_valid) {
                     error_line ("invalid --until parameter!");
+                    ++error_count;
+                }
+            }
+            else if (!strncmp (long_option, "channels", 8)) {           // --channels
+                parse_channel_selection (long_param);
+
+                if (!num_channel_selection) {
+                    error_line ("invalid --channels parameter!");
                     ++error_count;
                 }
             }
@@ -1056,6 +1074,123 @@ static void parse_sample_time_index (struct sample_time_index *dst, char *src)
     dst->value_is_valid = 1;
 }
 
+// Parse the parameter of the --channels command. This is a comma-separated list of the
+// channel identities (the same numbering reported by wvunpack -f 4, where Microsoft channels
+// are 1-18 and non-Microsoft channels are 33-254). The order of the list does not matter; the
+// selected channels are always output in their original file order. Ranges and simple
+// Microsoft speaker names (e.g., "FL,FR") are also accepted. The parse fails (leaving
+// num_channel_selection at 0) if the spec is malformed or contains duplicate identities.
+
+static int channel_name_to_id (const char *name, int len)
+{
+    static const struct { const char *name; unsigned char id; } names [] = {
+        { "FL", 1 }, { "FR", 2 }, { "FC", 3 }, { "LFE", 4 }, { "BL", 5 }, { "BR", 6 },
+        { "FLC", 7 }, { "FRC", 8 }, { "BC", 9 }, { "SL", 10 }, { "SR", 11 }, { "TC", 12 },
+        { "TFL", 13 }, { "TFC", 14 }, { "TFR", 15 }, { "TBL", 16 }, { "TBC", 17 }, { "TBR", 18 },
+        { NULL, 0 }
+    };
+    int i;
+
+    for (i = 0; names [i].name; ++i)
+        if ((int) strlen (names [i].name) == len && !stricmp_n (names [i].name, name, len))
+            return names [i].id;
+
+    return 0;
+}
+
+static void parse_channel_selection (char *src)
+{
+    unsigned char *ids = NULL, *new_ids;
+    int count = 0, i, j;
+    char *sp = src, *tok_start;
+
+    while (*sp) {
+        tok_start = sp;
+
+        while (*sp && *sp != ',')
+            ++sp;
+
+        if (sp == tok_start) {      // empty token (leading or consecutive commas)
+            free (ids);
+            num_channel_selection = 0;
+            return;
+        }
+
+        if (isdigit ((unsigned char) *tok_start)) {
+            char *endp;
+            long first = strtol (tok_start, &endp, 10), last = first;
+
+            if (endp != sp && *endp == '-' && endp + 1 < sp) {
+                last = strtol (endp + 1, &endp, 10);
+
+                if (endp != sp) {
+                    free (ids);
+                    num_channel_selection = 0;
+                    return;
+                }
+            }
+            else if (endp != sp) {
+                free (ids);
+                num_channel_selection = 0;
+                return;
+            }
+
+            if (first < 1 || first > 255 || last < 1 || last > 255 || last < first) {
+                free (ids);
+                num_channel_selection = 0;
+                return;
+            }
+
+            while (first <= last) {
+                if (!(new_ids = realloc (ids, count + 1))) {
+                    free (ids);
+                    num_channel_selection = 0;
+                    return;
+                }
+
+                ids = new_ids;
+                ids [count++] = (unsigned char) first++;
+            }
+        }
+        else {
+            int id = channel_name_to_id (tok_start, (int) (sp - tok_start));
+
+            if (!id || !(new_ids = realloc (ids, count + 1))) {
+                free (ids);
+                num_channel_selection = 0;
+                return;
+            }
+
+            ids = new_ids;
+            ids [count++] = (unsigned char) id;
+        }
+
+        if (*sp == ',')
+            ++sp;
+    }
+
+    if (!count) {
+        free (ids);
+        num_channel_selection = 0;
+        return;
+    }
+
+    // reject duplicates (which the library would also reject, but catch them here for a clear
+    // command-line error)
+
+    for (i = 0; i < count; ++i)
+        for (j = 0; j < i; ++j)
+            if (ids [i] == ids [j]) {
+                free (ids);
+                num_channel_selection = 0;
+                return;
+            }
+
+    free (channel_selection);
+    channel_selection = ids;
+    num_channel_selection = count;
+}
+
 
 // Open specified file for writing, with overwrite check. If the specified file already exists (and the user has
 // agreed to overwrite) then open a temp file instead and store a pointer to that filename at "tempfilename" (otherwise
@@ -1648,6 +1783,15 @@ static int unpack_file (char *infilename, char *outfilename, int add_extension)
             extension = WavpackGetFileExtension (wpc);
     }
 
+    // if the user requested a subset of channels, set up the selection now (before any samples
+    // are decoded or any seeking is done) and report a clear error if it is not applicable
+
+    if (num_channel_selection && !WavpackSetChannelSelection (wpc, channel_selection, num_channel_selection)) {
+        error_line ("can't select that channel combination: %s", WavpackGetErrorMessage (wpc));
+        WavpackCloseFile (wpc);
+        return WAVPACK_SOFT_ERROR;
+    }
+
     wvc_mode = WavpackGetMode (wpc) & MODE_WVC;
     num_channels = WavpackGetNumChannels (wpc);
     input_qmode = WavpackGetQualifyMode (wpc);
@@ -1710,11 +1854,26 @@ static int unpack_file (char *infilename, char *outfilename, int add_extension)
                 output_qmode = QMODE_DSD_MSB_FIRST;     // the raw "qmode" in the file as well (for some future use perhaps?),
             else if (output_format == WP_FORMAT_WAV)    // but we DON'T want to honor that when generating WAV or DFF files
                 output_qmode = 0;                       // because then they would be corrupt (e.g., big-endian WAV files)
+
+            // a channel selection changes which (and how many) channels are output, so any stored
+            // wrapper header is no longer valid and we must generate a new one (and the original
+            // channel reordering, if any, does not apply to the selection)
+
+            if (num_channel_selection) {
+                output_qmode &= ~QMODE_REORDERED_CHANS;
+
+                if (!(input_qmode & QMODE_DSD_AUDIO)) {
+                    output_format = WP_FORMAT_WAV;
+                    output_qmode = 0;
+                }
+
+                extension = file_formats [output_format].default_extension;
+            }
         }
     }
     else if ((!WavpackGetWrapperBytes (wpc) &&          // case 4: unknown format and no wrapper present (and not verify mode),
         outfilename) || skip.value_is_valid ||          //   or just doing a partial file, so we must override to a known format
-        until.value_is_valid) {
+        until.value_is_valid || num_channel_selection) {
 
         if (input_qmode & QMODE_DSD_AUDIO) {
             output_format = WP_FORMAT_DFF;
@@ -1860,8 +2019,9 @@ static int unpack_file (char *infilename, char *outfilename, int add_extension)
 #endif
 
     if (outfile && !raw_decode) {
-        if (until_samples_total) {
-            if (!file_formats [output_format].WriteHeader (outfile, wpc, until_samples_total, output_qmode)) {
+        if (until_samples_total || num_channel_selection) {
+            if (!file_formats [output_format].WriteHeader (outfile, wpc, until_samples_total ?
+                until_samples_total : WavpackGetNumSamples64 (wpc), output_qmode)) {
                 DoTruncateFile (outfile);
                 result = WAVPACK_SOFT_ERROR;
             }
@@ -1939,7 +2099,7 @@ static int unpack_file (char *infilename, char *outfilename, int add_extension)
     // this is where we append any trailing wrapper, assuming that we did not create the header
     // and that there is actually one stored that came from the original file
 
-    if (outfile && result == WAVPACK_NO_ERROR && !created_riff_header && WavpackGetWrapperBytes (wpc)) {
+    if (outfile && result == WAVPACK_NO_ERROR && !created_riff_header && !num_channel_selection && WavpackGetWrapperBytes (wpc)) {
         unsigned char *wrapper_data = WavpackGetWrapperData (wpc);
         int wrapper_bytes = WavpackGetWrapperBytes (wpc);
 
@@ -2038,7 +2198,8 @@ static int unpack_file (char *infilename, char *outfilename, int add_extension)
         }
     }
 
-    if (result == WAVPACK_NO_ERROR && md5_diff && (WavpackGetMode (wpc) & MODE_LOSSLESS) && !until_samples_total && input_qmode == output_qmode) {
+    if (result == WAVPACK_NO_ERROR && md5_diff && (WavpackGetMode (wpc) & MODE_LOSSLESS) && !until_samples_total &&
+        !num_channel_selection && input_qmode == output_qmode) {
         error_line ("MD5 signatures should match, but do not!");
         result = WAVPACK_SOFT_ERROR;
     }

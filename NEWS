@@ -8,6 +8,8 @@
  wvgain.exe (command-line ReplayGain scanner) - 5.9.0
  wvtag.exe (command-line tagging utility) - 5.9.0
  ----------------------------------------------------
+  added: selective channel decoding to libwavpack (WavpackSetChannelSelection())
+  added: --channels option to wvunpack to decode only specified channels
   added: new feature to wvtag to copy tags from one WavPack file to another
   improved: minor tweaks to the new DNS (dynamic noise shaping) algorithm
   improved: better handling of specfic non-standard WAV and AIFF files

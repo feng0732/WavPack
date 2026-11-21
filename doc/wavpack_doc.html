@@ -1102,6 +1102,30 @@ a:hover {
     </p>
 
 				<p>
+					<b><tt>--channels=&lt;list&gt; = decode only the specified channels</tt></b>
+				</p>
+				<p>
+     This option allows decoding only a subset of the channels in a multichannel file. The
+     parameter is a comma-separated list of channel identities as reported by the <b>-f</b>
+     option of the same file (the Microsoft standard channels are numbered 1 through 18 and
+     any non-Microsoft channels follow with their stored values, typically 33 through 254).
+     Ranges (e.g., <b>33-36</b>) and Microsoft speaker names (e.g., <b>FL,FR,FC</b>) are also
+     accepted.
+				</p>
+				<p>
+     The selected channels are always output in their original file order regardless of the
+     order in which they are listed on the command line. The number of samples, the duration,
+     and the sample positions are unchanged, and only the selected channels appear in the
+     output (unselected channels are not replaced by silence or any other placeholder).
+     Channels that are jointly encoded in the source (e.g., stereo pairs, joint stereo) are
+     still decoded correctly because the entire multichannel sample is decoded internally
+     before the selection is applied. Ordinary PCM, floating-point, and DSD files (including
+     DSD-to-PCM conversion) are all handled the same way. A request that contains a missing,
+     unknown, or ambiguous channel identity is rejected with an error and no output is
+     produced.
+				</p>
+
+				<p>
 					<b><tt>--help = this help display</tt></b>
 				</p>
 				<p>

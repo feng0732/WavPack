@@ -325,6 +325,19 @@ int unpack_init (WavpackContext *wpc, int stream)
     CLEAR (wps->dc);
     CLEAR (wps->w);
 
+    // clear any channel layout captured from a previous block (this block's metadata, if any,
+    // will re-populate it below)
+
+    wps->blk_channel_info_seen = wps->blk_chan_ids_seen = FALSE;
+    wps->blk_num_channels = 0;
+    wps->blk_channel_mask = 0;
+
+    if (wps->blk_chan_ids) {
+        free (wps->blk_chan_ids);
+        wps->blk_chan_ids = NULL;
+        wps->blk_chan_ids_len = 0;
+    }
+
     if (!(wps->wphdr.flags & MONO_FLAG) && wpc->config.num_channels && wps->wphdr.block_samples &&
         (wpc->reduced_channels == 1 || wpc->config.num_channels == 1)) {
             wps->mute_error = TRUE;
@@ -352,6 +365,16 @@ int unpack_init (WavpackContext *wpc, int stream)
                 wps->mute_error = TRUE;
                 return FALSE;
             }
+    }
+
+    // if a channel selection is active then make sure this block still describes the same
+    // channel layout as the one the selection was made against (only the first stream of a
+    // sequence carries the channel metadata, and only blocks that contain audio matter here)
+
+    if (wpc->select_count && stream == 0 && wps->wphdr.block_samples &&
+        !verify_channel_selection_layout (wpc)) {
+            wps->mute_error = TRUE;
+            return FALSE;
     }
 
     if (wps->wphdr.block_samples && ((wps->wphdr.flags & DSD_FLAG) ? !wps->dsd.ready : !bs_is_open (&wps->wvbits))) {
@@ -493,6 +516,39 @@ static int read_channel_info (WavpackContext *wpc, WavpackMetadata *wpmd)
     if (!bytecnt || bytecnt > 7)
         return FALSE;
 
+    // always capture the channel layout described by this block, regardless of whether or not
+    // it is the first block in the file. This is used to verify that the layout does not change
+    // between blocks while a channel selection is active. Note that this must not disturb the
+    // parser state below (byteptr, shift, mask).
+
+    if (wpc->streams && wpc->streams [0]) {
+        WavpackStream *wps = wpc->streams [0];
+
+        if (bytecnt >= 6) {
+            wps->blk_num_channels = (byteptr [0] | ((byteptr [2] & 0xf) << 8)) + 1;
+
+            if (bytecnt == 7)
+                wps->blk_channel_mask = byteptr [3] | ((uint32_t) byteptr [4] << 8) |
+                    ((uint32_t) byteptr [5] << 16) | ((uint32_t) byteptr [6] << 24);
+            else
+                wps->blk_channel_mask = byteptr [3] | ((uint32_t) byteptr [4] << 8) |
+                    ((uint32_t) byteptr [5] << 16);
+        }
+        else {
+            uint32_t blk_mask = 0;
+            int bc;
+
+            wps->blk_num_channels = byteptr [0];
+
+            for (bc = 0; bc < bytecnt - 1; ++bc)
+                blk_mask |= (uint32_t) byteptr [bc + 1] << (bc * 8);
+
+            wps->blk_channel_mask = blk_mask;
+        }
+
+        wps->blk_channel_info_seen = TRUE;
+    }
+
     if (!wpc->config.num_channels) {
 
         // if bytecnt is 6 or 7 we are using new configuration with "unlimited" streams
@@ -559,6 +615,29 @@ static int read_channel_identities (WavpackContext *wpc, WavpackMetadata *wpmd)
     for (i = 0; i < wpmd->byte_length; ++i)
         if (!idents [i])
             return FALSE;
+
+    // capture the identities from the current block so layout changes can be detected while a
+    // channel selection is active (this is independent of the "sticky" copy kept below)
+
+    if (wpc->streams && wpc->streams [0]) {
+        WavpackStream *wps = wpc->streams [0];
+
+        if (wps->blk_chan_ids)
+            free (wps->blk_chan_ids);
+
+        wps->blk_chan_ids = (unsigned char *) malloc (wpmd->byte_length + 1);
+
+        if (!wps->blk_chan_ids) {
+            wps->blk_chan_ids_len = 0;
+            wps->blk_chan_ids_seen = FALSE;
+        }
+        else {
+            memcpy (wps->blk_chan_ids, wpmd->data, wpmd->byte_length);
+            wps->blk_chan_ids [wpmd->byte_length] = 0;
+            wps->blk_chan_ids_len = wpmd->byte_length;
+            wps->blk_chan_ids_seen = TRUE;
+        }
+    }
 
     if (!wpc->channel_identities) {
         wpc->channel_identities = (unsigned char *)malloc (wpmd->byte_length + 1);

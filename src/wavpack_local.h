@@ -254,6 +254,14 @@ typedef struct {
     uint32_t num_pre_samples;
     int discontinuous;
 
+    // channel layout parsed from this block's metadata (used only to verify that the layout
+    // does not change between blocks while a channel selection is active)
+
+    int blk_channel_info_seen, blk_chan_ids_seen, blk_num_channels;
+    uint32_t blk_channel_mask;
+    unsigned char *blk_chan_ids;
+    int blk_chan_ids_len;
+
     int64_t sample_index;
     int bits, num_terms, mute_error, joint_stereo, false_stereo, shift, lossy_blocks;
     int num_decorrs, num_passes, best_decorr, mask_decorr, extra_flags;
@@ -334,6 +342,19 @@ struct WavpackContext {
     uint32_t channel_layout, dsd_multiplier;
     void *decimation_context;
     char file_extension [8];
+
+    // these items support selective channel decoding (see WavpackSetChannelSelection())
+
+    int select_count;                   // number of selected channels (0 = decode all)
+    int32_t *chan_select;               // per file channel: output slot + 1, or 0 if not selected
+    unsigned char *select_snapshot;     // identities of ALL file channels when selection was made
+    unsigned char *select_chan_ids;     // identities of the selected channels (in file order)
+    uint32_t select_channel_mask;       // channel mask describing the selected channels
+    int select_file_channels;           // file channel count when the selection was made
+    uint32_t select_file_mask;          // channel mask of the file when the selection was made
+    int32_t *select_buff;               // scratch buffer used to render all channels before compaction
+    uint32_t select_buff_samples;       // capacity of select_buff in frames (0 = not allocated)
+    int select_error;                   // set if a block layout differed from the selection
 
 #ifdef ENABLE_THREADS
     Workers *workers;
@@ -677,6 +698,9 @@ int WavpackGetNumChannels (WavpackContext *wpc);
 int WavpackGetChannelMask (WavpackContext *wpc);
 int WavpackGetReducedChannels (WavpackContext *wpc);
 int WavpackGetFloatNormExp (WavpackContext *wpc);
+int WavpackSetChannelSelection (WavpackContext *wpc, const unsigned char *chan_ids, int num_chan_ids);
+int WavpackGetChannelSelection (WavpackContext *wpc, unsigned char *chan_ids);
+int verify_channel_selection_layout (WavpackContext *wpc);
 uint32_t WavpackGetNumSamples (WavpackContext *wpc);
 int64_t WavpackGetNumSamples64 (WavpackContext *wpc);
 uint32_t WavpackGetSampleIndex (WavpackContext *wpc);

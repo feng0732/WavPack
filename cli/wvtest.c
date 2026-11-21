@@ -60,6 +60,8 @@ static const char *usage =
 "          --seek-short-chunks = use very short chunks on seeking tests\n"
 "                                 (may not work with very long files)\n"
 "          --seek-2ch-max      = use 2-ch max mode on seeking tests\n"
+"          --seltest[=n]       = test selective channel decode on files (n=runs\n"
+"                                 per file, def=1; implies channel selection)\n"
 "          --write=n[-n][,...] = write specific test(s) (or range(s)) to disk\n\n"
 " Web:     Visit www.wavpack.com for latest version and info\n";
 
@@ -115,6 +117,7 @@ struct audio_generator {
 };
 
 static int seeking_test (char *filename, int32_t test_count, int test_flags);
+static int selection_test (char *filename, int32_t test_count, int test_flags);
 static void tone_generator_init (struct audio_generator *cxt, int sample_rate, int low_freq, int high_freq);
 static void noise_generator_init (struct audio_generator *cxt, double factor);
 static void audio_generator_run (struct audio_generator *cxt, float *samples, int num_samples);
@@ -152,7 +155,7 @@ static WavpackStreamReader freader;
 int main (argc, argv) int argc; char **argv;
 {
     int wpconfig_flags = CONFIG_MD5_CHECKSUM | CONFIG_OPTIMIZE_MONO, test_flags = 0, base_minutes = 2, res = 0;
-    int seektest = 0;
+    int seektest = 0, seltest = 0;
 
     // loop through command-line arguments
 
@@ -241,6 +244,15 @@ int main (argc, argv) int argc; char **argv;
                 if (seektest)
                     break;
             }
+            else if (!strncmp (long_option, "seltest", 7)) {            // --seltest[=n]
+                if (*long_param)
+                    seltest = strtol (long_param, NULL, 10);
+                else
+                    seltest = 1;
+
+                if (seltest)
+                    break;
+            }
             else if (!strcmp (long_option, "seek-dsd-pcm")) {           // --seek-dsd-pcm
                 test_flags |= TEST_SEEK_DSD_PCM;
             }
@@ -279,7 +291,7 @@ int main (argc, argv) int argc; char **argv;
     else
         printf (sign_on, VERSION_OS, WavpackGetLibraryVersionString ());
 
-    if (!seektest && !(test_flags & (TEST_FLAG_DEFAULT | TEST_FLAG_EXHAUSTIVE))) {
+    if (!seektest && !seltest && !(test_flags & (TEST_FLAG_DEFAULT | TEST_FLAG_EXHAUSTIVE))) {
         puts (usage);
         return 1;
     }
@@ -287,6 +299,11 @@ int main (argc, argv) int argc; char **argv;
     if (seektest) {
         while (--argc)
             if ((res = seeking_test (*++argv, seektest, test_flags)))
+                break;
+    }
+    else if (seltest) {
+        while (--argc)
+            if ((res = selection_test (*++argv, seltest, test_flags)))
                 break;
     }
     else {
@@ -588,8 +605,291 @@ static int seeking_test (char *filename, int32_t test_count, int test_flags)
     return 0;
 }
 
-// Given a WavPack configuration and test flags, run the various combinations of
-// bit-depth and channel configurations. A return value of FALSE indicates an error.
+// Verify selective channel decoding on an existing WavPack file. The file is first decoded
+// normally (all channels) and then decoded again with various channel selections, and each
+// selected decode must contain exactly the selected channels (in file order) with identical
+// sample values, sample counts, and sample indexes. The selected decodes are also performed
+// with a variety of chunk sizes to verify that the result is independent of how the samples
+// are requested. A return value of 0 indicates success.
+
+static int selection_test (char *filename, int32_t test_count, int test_flags)
+{
+    char error [80];
+    int open_flags = OPEN_WVC | OPEN_ALT_TYPES | (test_flags & TEST_SEEK_DSD_PCM ? OPEN_DSD_AS_PCM : OPEN_DSD_NATIVE);
+    unsigned char sel_ids [WAVPACK_MAX_CHANS], all_ids [WAVPACK_MAX_CHANS + 1];
+    int64_t total_samples;
+    int32_t *full = NULL, *selected = NULL;
+    WavpackContext *wpc;
+    int num_chans, full_samples = 0, test_index, i, c;
+
+    if (*filename == '-') {
+        printf ("\nselection_test(): error \"%s\" opening input file \"%s\"\n", "name begins with dash", filename);
+        return -1;
+    }
+
+    if (worker_threads)
+        open_flags |= worker_threads << OPEN_THREADS_SHFT;
+
+    // First decode the entire file normally, storing all channels for reference. Also verify
+    // that requesting an impossible selection on the initial context fails cleanly.
+
+    wpc = WavpackOpenFileInput (filename, error, open_flags, 0);
+
+    if (!wpc) {
+        printf ("selection_test(): error \"%s\" opening input file \"%s\"\n", error, filename);
+        return -1;
+    }
+
+    printf ("\n-------------------- file: %s %s--------------------\n",
+        filename, (WavpackGetMode (wpc) & MODE_WVC) ? "(+wvc) " : "");
+
+    num_chans = WavpackGetNumChannels (wpc);
+    total_samples = WavpackGetNumSamples64 (wpc);
+
+    if (total_samples < 2 || total_samples == -1) {
+        printf ("selection_test(): can't determine file size!\n");
+        WavpackCloseFile (wpc);
+        return -1;
+    }
+
+    if (num_chans < 1 || num_chans > WAVPACK_MAX_CHANS) {
+        printf ("selection_test(): unsupported channel count %d!\n", num_chans);
+        WavpackCloseFile (wpc);
+        return -1;
+    }
+
+    WavpackGetChannelIdentities (wpc, all_ids);
+    full = malloc (sizeof (int32_t) * (size_t) total_samples * num_chans);
+
+    if (!full) {
+        printf ("selection_test(): can't allocate memory!\n");
+        WavpackCloseFile (wpc);
+        return -1;
+    }
+
+    {
+        int32_t *chunk = malloc (sizeof (int32_t) * 8192 * num_chans);
+        int samples;
+
+        while ((samples = WavpackUnpackSamples (wpc, chunk, 8192)) > 0) {
+            if (full_samples + samples > total_samples) {
+                printf ("selection_test(): sample count error!\n");
+                WavpackCloseFile (wpc);
+                free (chunk);
+                free (full);
+                return -1;
+            }
+
+            memcpy (full + (size_t) full_samples * num_chans, chunk, sizeof (int32_t) * samples * num_chans);
+            full_samples += samples;
+        }
+
+        free (chunk);
+    }
+
+    if (full_samples != total_samples || WavpackGetNumErrors (wpc)) {
+        printf ("selection_test(): full decode error (samples %d/%lld, %d errors)!\n",
+            full_samples, (long long) total_samples, WavpackGetNumErrors (wpc));
+        WavpackCloseFile (wpc);
+        free (full);
+        return -1;
+    }
+
+    WavpackCloseFile (wpc);
+
+    if (num_chans < 2) {
+        printf ("selection_test(): file has only %d channel(s), nothing to select!\n", num_chans);
+        free (full);
+        return 0;
+    }
+
+    // Build a selection of roughly half the channels (interleaved through the file). Verify
+    // that a request containing an identity that does not exist (12 if absent) is rejected.
+
+    {
+        int sel_count = 0, missing_id = 0;
+
+        for (c = 0; c < num_chans; ++c)
+            if (!(c & 1) && all_ids [c] != 0xff)
+                sel_ids [sel_count++] = all_ids [c];
+
+        if (!sel_count) {
+            printf ("selection_test(): no selectable channels!\n");
+            free (full);
+            return 0;
+        }
+
+        for (i = 1; i <= 255; ++i) {
+            int found = 0;
+
+            for (c = 0; c < num_chans; ++c)
+                if (all_ids [c] == i)
+                    found = 1;
+
+            if (!found && i != 0xff) {
+                missing_id = i;
+                break;
+            }
+        }
+
+        // verify the error contracts on a fresh context (before any decoding)
+
+        wpc = WavpackOpenFileInput (filename, error, open_flags, 0);
+
+        if (!wpc) {
+            printf ("selection_test(): error \"%s\" reopening input file \"%s\"\n", error, filename);
+            free (full);
+            return -1;
+        }
+
+        if (missing_id) {
+            unsigned char bad [1];
+
+            bad [0] = (unsigned char) missing_id;
+
+            if (WavpackSetChannelSelection (wpc, bad, 1)) {
+                printf ("selection_test(): missing identity %d accepted!\n", missing_id);
+                WavpackCloseFile (wpc); free (full);
+                return -1;
+            }
+        }
+
+        {
+            unsigned char dup [2];
+
+            dup [0] = dup [1] = sel_ids [0];
+
+            if (!num_chans || WavpackSetChannelSelection (wpc, dup, 2)) {
+                printf ("selection_test(): duplicate identity accepted!\n");
+                WavpackCloseFile (wpc); free (full);
+                return -1;
+            }
+        }
+
+        if (WavpackGetNumChannels (wpc) != num_chans) {
+            printf ("selection_test(): failed selection changed channel count!\n");
+            WavpackCloseFile (wpc); free (full);
+            return -1;
+        }
+
+        WavpackCloseFile (wpc);
+
+        // Now run the actual selected decodes with a variety of chunk sizes
+
+        for (test_index = 0; test_index < test_count; ++test_index) {
+            uint32_t chunk_samples = 1 + (uint32_t) (frandom () * 4999);
+            int32_t *chunkbuf;
+            int sel_chans, selected_samples = 0, samples;
+
+            wpc = WavpackOpenFileInput (filename, error, open_flags, 0);
+
+            if (!wpc) {
+                printf ("selection_test(): error \"%s\" reopening input file \"%s\"\n", error, filename);
+                free (full);
+                return -1;
+            }
+
+            if (!WavpackSetChannelSelection (wpc, sel_ids, sel_count)) {
+                printf ("selection_test(): selection error \"%s\"!\n", WavpackGetErrorMessage (wpc));
+                WavpackCloseFile (wpc); free (full);
+                return -1;
+            }
+
+            sel_chans = WavpackGetNumChannels (wpc);
+
+            if (sel_chans != sel_count || WavpackGetReducedChannels (wpc) != sel_count) {
+                printf ("selection_test(): selected channel count is %d/%d (expected %d)!\n",
+                    sel_chans, WavpackGetReducedChannels (wpc), sel_count);
+                WavpackCloseFile (wpc); free (full);
+                return -1;
+            }
+
+            {
+                unsigned char check_ids [WAVPACK_MAX_CHANS + 1];
+
+                if (WavpackGetChannelSelection (wpc, check_ids) != sel_count) {
+                    printf ("selection_test(): reported selection size mismatch!\n");
+                    WavpackCloseFile (wpc); free (full);
+                    return -1;
+                }
+
+                for (i = 0; i < sel_count; ++i)
+                    if (check_ids [i] != sel_ids [i]) {
+                        printf ("selection_test(): selection identity/order mismatch at %d!\n", i);
+                        WavpackCloseFile (wpc); free (full);
+                        return -1;
+                    }
+            }
+
+            selected = realloc (selected, sizeof (int32_t) * (size_t) total_samples * sel_count);
+            chunkbuf = malloc (sizeof (int32_t) * (size_t) chunk_samples * sel_count);
+
+            if (!selected || !chunkbuf) {
+                printf ("selection_test(): can't allocate memory!\n");
+                WavpackCloseFile (wpc); free (chunkbuf); free (full); free (selected);
+                return -1;
+            }
+
+            while ((samples = WavpackUnpackSamples (wpc, chunkbuf, chunk_samples)) > 0) {
+                if (selected_samples + samples > total_samples) {
+                    printf ("selection_test(): selected sample overflow!\n");
+                    WavpackCloseFile (wpc); free (chunkbuf); free (full); free (selected);
+                    return -1;
+                }
+
+                memcpy (selected + (size_t) selected_samples * sel_count, chunkbuf, sizeof (int32_t) * samples * sel_count);
+                selected_samples += samples;
+
+                if (WavpackGetSampleIndex64 (wpc) != selected_samples) {
+                    printf ("selection_test(): sample index error (%lld vs %d)!\n",
+                        (long long) WavpackGetSampleIndex64 (wpc), selected_samples);
+                    WavpackCloseFile (wpc); free (chunkbuf); free (full); free (selected);
+                    return -1;
+                }
+            }
+
+            free (chunkbuf);
+
+            if (selected_samples != full_samples) {
+                printf ("selection_test(): selected sample count %d != %d!\n", selected_samples, full_samples);
+                WavpackCloseFile (wpc); free (full); free (selected);
+                return -1;
+            }
+
+            // verify every selected sample matches the reference (in file order)
+
+            for (i = 0; i < selected_samples; ++i) {
+                int sel_index = 0;
+
+                for (c = 0; c < num_chans; ++c)
+                    if (!(c & 1) && all_ids [c] != 0xff) {
+                        if (selected [(size_t) i * sel_count + sel_index] != full [(size_t) i * num_chans + c]) {
+                            printf ("selection_test(): sample mismatch at %d/%d (chunk %u)!\n", i, sel_index, chunk_samples);
+                            WavpackCloseFile (wpc); free (full); free (selected);
+                            return -1;
+                        }
+
+                        sel_index++;
+                    }
+            }
+
+            if (WavpackGetNumErrors (wpc)) {
+                printf ("selection_test(): selected decode reported %d errors!\n", WavpackGetNumErrors (wpc));
+                WavpackCloseFile (wpc); free (full); free (selected);
+                return -1;
+            }
+
+            WavpackCloseFile (wpc);
+
+            printf ("run %d: %d channels selected, %d samples, chunk %u, ok\n",
+                test_index + 1, sel_count, selected_samples, chunk_samples);
+        }
+    }
+
+    free (full);
+    free (selected);
+    return 0;
+}
 
 static int run_test_size_modes (int wpconfig_flags, int test_flags, int base_minutes)
 {

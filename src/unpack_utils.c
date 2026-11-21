@@ -30,6 +30,58 @@ typedef struct {
 } WorkerData;
 #endif
 
+// These helpers support selective channel decoding. The entire multichannel sample is always
+// decoded (into a scratch buffer if necessary) so that jointly encoded channels are never
+// disturbed, and then only the selected channels are compacted into the caller's buffer in
+// their original file order. When the source is DSD being converted to PCM, the decimation
+// is applied to the complete-channel buffer before compaction so that the per-channel
+// decimation state is advanced exactly as it would be for a full-channel decode.
+
+static int32_t *select_scratch (WavpackContext *wpc, uint32_t frames);
+static uint32_t unpack_samples_internal (WavpackContext *wpc, int32_t *buffer, uint32_t samples);
+static void compact_selected_frames (WavpackContext *wpc, int32_t *dst, uint32_t frames, int decimate);
+
+static int32_t *select_scratch (WavpackContext *wpc, uint32_t frames)
+{
+    if (wpc->select_buff_samples < frames) {
+        int32_t *new_buff = (int32_t *) realloc (wpc->select_buff,
+            (size_t) frames * wpc->config.num_channels * sizeof (int32_t));
+
+        if (!new_buff)
+            return NULL;
+
+        wpc->select_buff = new_buff;
+        wpc->select_buff_samples = frames;
+    }
+
+    return wpc->select_buff;
+}
+
+// Compact the fully-decoded, all-channel scratch buffer into the caller's buffer, keeping
+// only the selected channels (in file order). If "decimate" is set and the source is DSD that
+// is being converted to PCM then the per-channel decimation is run on the complete-channel
+// data first, which keeps the decimation state identical to a full-channel decode.
+
+static void compact_selected_frames (WavpackContext *wpc, int32_t *dst, uint32_t frames, int decimate)
+{
+    int32_t *src = wpc->select_buff;
+    int file_channels = wpc->config.num_channels;
+    uint32_t i;
+    int chan;
+
+#ifdef ENABLE_DSD
+    if (decimate && wpc->decimation_context)
+        decimate_dsd_run (wpc->decimation_context, src, frames);
+#else
+    (void) decimate;
+#endif
+
+    for (i = 0; i < frames; ++i, src += file_channels)
+        for (chan = 0; chan < file_channels; ++chan)
+            if (wpc->chan_select [chan])
+                *dst++ = src [chan];
+}
+
 ///////////////////////////// executable code ////////////////////////////////
 
 // This function unpacks the specified number of samples from the given stream (which must be
@@ -112,9 +164,40 @@ static void unpack_samples_interleave (WavpackStream *wps, int32_t *outbuf, int 
 
 uint32_t WavpackUnpackSamples (WavpackContext *wpc, int32_t *buffer, uint32_t samples)
 {
+    uint32_t result;
+
+    // when a channel selection is active we decode ALL the channels into a scratch buffer (so
+    // that jointly encoded channels are decoded correctly) and then compact only the selected
+    // channels into the caller's buffer. Decimation (for DSD-as-PCM) is applied to the complete
+    // channel buffer just before the compaction for exactly the same reason.
+
+    if (wpc->select_count) {
+        memset (buffer, 0, (size_t) wpc->select_count * samples * sizeof (int32_t));
+
+        if (wpc->select_error || !select_scratch (wpc, samples))
+            return 0;
+
+        result = unpack_samples_internal (wpc, wpc->select_buff, samples);
+        compact_selected_frames (wpc, buffer, result, TRUE);
+        return result;
+    }
+
+    return unpack_samples_internal (wpc, buffer, samples);
+}
+
+static uint32_t unpack_samples_internal (WavpackContext *wpc, int32_t *buffer, uint32_t samples)
+{
     int num_channels = wpc->config.num_channels, file_done = FALSE;
     uint32_t bcount, samples_unpacked = 0, samples_to_unpack;
     int32_t *bptr = buffer;
+
+    // if a previous block caused the channel layout to change while a selection is active then
+    // decoding has been permanently halted for this context; return an empty result
+
+    if (wpc->select_error) {
+        memset (buffer, 0, (size_t) wpc->select_count * samples * sizeof (int32_t));
+        return 0;
+    }
 
     memset (buffer, 0, (wpc->reduced_channels ? wpc->reduced_channels : num_channels) * samples * sizeof (int32_t));
 
@@ -257,6 +340,13 @@ uint32_t WavpackUnpackSamples (WavpackContext *wpc, int32_t *buffer, uint32_t sa
             wpc->crc_errors++;
 
         wps->init_done = TRUE;
+
+        // if a channel selection is active then unpack_init() may have detected that this block
+        // no longer matches the layout the selection was based on, in which case we must stop
+        // decoding immediately and return an empty result (rather than silent placeholders)
+
+        if (wpc->select_error)
+            break;
 
         // if this block is not the final block of a multichannel sequence (and we're not truncating
         // to stereo), then enter this conditional block...otherwise we just unpack the samples directly
@@ -474,7 +564,7 @@ uint32_t WavpackUnpackSamples (WavpackContext *wpc, int32_t *buffer, uint32_t sa
 #endif
 
 #ifdef ENABLE_DSD
-    if (wpc->decimation_context)    // TODO: this could be parallelized too
+    if (wpc->decimation_context && !wpc->select_count)  // with a selection, decimation is applied after compaction
         decimate_dsd_run (wpc->decimation_context, buffer, samples_unpacked);
 #endif
 

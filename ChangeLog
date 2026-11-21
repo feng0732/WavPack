@@ -1,3 +1,22 @@
+2026-11-21  David Bryant  <david@wavpack.com>
+
+  * include/wavpack.h, src/common_utils.c, src/unpack_utils.c, src/open_utils.c, src/wavpack_local.h:
+    libwavpack: add selective channel decoding
+    - new API WavpackSetChannelSelection() / WavpackGetChannelSelection()
+    - a caller specifies the identities (as reported by WavpackGetChannelIdentities()) of the
+      channels that WavpackUnpackSamples() should return, and only those channels are output
+    - the selected channels are returned in their original file order and all sample counts,
+      sample indexes, and the identity metadata are preserved
+    - the entire multichannel sample is decoded internally (so jointly encoded channels are not
+      disturbed) and DSD-to-PCM decimation state is advanced on all channels, then only the
+      selected channels are delivered (no silent placeholder channels are produced)
+    - missing, duplicate, unknown, or ambiguous identities are rejected with a clear error and
+      the context is left unchanged; a channel-layout change between blocks while a selection is
+      active is reported as an error and halts decoding with an empty result
+    - without a selection the behavior is exactly as before
+  * cli/wvunpack.c:
+    add --channels option to decode only the specified channels
+
 2026-01-15  David Bryant  <david@wavpack.com>
 
   * cli/utils.c:

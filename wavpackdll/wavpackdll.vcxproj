@@ -121,7 +121,7 @@
 /export:WavpackSeekSample64 /export:WavpackGetFileSize64
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
-/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities /export:WavpackSetChannelSelection /export:WavpackGetChannelSelection
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock
@@ -179,7 +179,7 @@
 /export:WavpackSeekSample64 /export:WavpackGetFileSize64
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
-/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities /export:WavpackSetChannelSelection /export:WavpackGetChannelSelection
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock
@@ -237,7 +237,7 @@
 /export:WavpackSeekSample64 /export:WavpackGetFileSize64
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
-/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities /export:WavpackSetChannelSelection /export:WavpackGetChannelSelection
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock
@@ -300,7 +300,7 @@
 /export:WavpackSeekSample64 /export:WavpackGetFileSize64
 /export:WavpackGetQualifyMode /export:WavpackGetFileExtension
 /export:WavpackGetFileFormat /export:WavpackGetNumSamplesInFrame
-/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities
+/export:WavpackGetNativeSampleRate /export:WavpackGetChannelIdentities /export:WavpackSetChannelSelection /export:WavpackGetChannelSelection
 /export:WavpackGetChannelLayout /export:WavpackSetFileInformation
 /export:WavpackSetConfiguration64 /export:WavpackSetChannelLayout
 /export:WavpackVerifySingleBlock

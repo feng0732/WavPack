@@ -316,7 +316,15 @@ double WavpackGetInstantBitrate (WavpackContext *wpc)
 
 uint32_t WavpackGetChannelLayout (WavpackContext *wpc, unsigned char *reorder)
 {
-    int nchans = wpc->channel_layout & 0xff;
+    int nchans;
+
+    // a channel selection changes the actual channel count (and order) returned, so the
+    // stored CAF layout no longer applies to it
+
+    if (wpc->select_count)
+        return 0;
+
+    nchans = wpc->channel_layout & 0xff;
 
     // the layout channel count is read verbatim from the file metadata and is not
     // guaranteed to match the actual channel count, so clip the reorder string to the
@@ -346,9 +354,23 @@ uint32_t WavpackGetChannelLayout (WavpackContext *wpc, unsigned char *reorder)
 
 void WavpackGetChannelIdentities (WavpackContext *wpc, unsigned char *identities)
 {
-    int num_channels = wpc->config.num_channels, index = 1;
-    uint32_t channel_mask = wpc->config.channel_mask;
-    unsigned char *src = wpc->channel_identities;
+    int num_channels, index = 1;
+    uint32_t channel_mask;
+    unsigned char *src;
+
+    // if a channel selection is active then report the identities of the selected channels
+    // exactly as they are stored in the file (there is no requirement that they be in
+    // Microsoft order, so we can't re-derive them from a mask in that case)
+
+    if (wpc->select_count) {
+        memcpy (identities, wpc->select_chan_ids, wpc->select_count);
+        identities [wpc->select_count] = 0;
+        return;
+    }
+
+    num_channels = wpc->config.num_channels;
+    channel_mask = wpc->config.channel_mask;
+    src = wpc->channel_identities;
 
     while (num_channels--) {
         if (channel_mask) {
@@ -367,6 +389,286 @@ void WavpackGetChannelIdentities (WavpackContext *wpc, unsigned char *identities
     }
 
     *identities = 0;
+}
+
+// Compute the identity of each channel in the file. Unlike WavpackGetChannelIdentities()
+// this always describes the entire source file (i.e., it ignores any active selection) and
+// does not NULL terminate the result. This is used internally both to build selections and
+// to verify that the channels in each decoded block still match the selection. The caller
+// supplies the channel count, mask, and any non-Microsoft identities (which may be NULL).
+
+static void compute_channel_identities (int num_channels, uint32_t channel_mask,
+    const unsigned char *non_ms_ids, unsigned char *identities)
+{
+    int index = 1;
+    const unsigned char *src = non_ms_ids;
+
+    while (num_channels--) {
+        if (channel_mask) {
+            while (!(channel_mask & 1)) {
+                channel_mask >>= 1;
+                index++;
+            }
+
+            *identities++ = index++;
+            channel_mask >>= 1;
+        }
+        else if (src && *src)
+            *identities++ = *src++;
+        else
+            *identities++ = 0xff;
+    }
+}
+
+// Free all memory associated with an active channel selection (if any) and clear the
+// selection state, returning the context to full-channel decoding.
+
+static void free_channel_selection (WavpackContext *wpc)
+{
+    if (wpc->chan_select)
+        free (wpc->chan_select);
+
+    if (wpc->select_snapshot)
+        free (wpc->select_snapshot);
+
+    if (wpc->select_chan_ids)
+        free (wpc->select_chan_ids);
+
+    if (wpc->select_buff)
+        free (wpc->select_buff);
+
+    wpc->chan_select = NULL;
+    wpc->select_snapshot = NULL;
+    wpc->select_chan_ids = NULL;
+    wpc->select_buff = NULL;
+    wpc->select_buff_samples = 0;
+    wpc->select_count = 0;
+    wpc->select_error = 0;
+}
+
+// Select a subset of the channels in the file to be returned by subsequent calls to
+// WavpackUnpackSamples(). See the documentation in wavpack.h for the complete contract. Note
+// that the selection is stored in the context in the order that the channels appear in the
+// file (not the order they were requested) and that all the channels in the file are still
+// decoded internally so that jointly encoded channels are not disturbed.
+
+int WavpackSetChannelSelection (WavpackContext *wpc, const unsigned char *chan_ids, int num_chan_ids)
+{
+    unsigned char *file_ids, *snapshot, *sorted_ids = NULL;
+    int32_t *chan_select = NULL;
+    uint32_t channel_mask = 0;
+    int i, j, num_channels, count = 0;
+
+    if (!wpc) {
+        return FALSE;
+    }
+
+    if (!chan_ids || num_chan_ids <= 0) {
+        strcpy (wpc->error_message, "invalid channel selection!");
+        return FALSE;
+    }
+
+    if (wpc->stream3) {
+        strcpy (wpc->error_message, "channel selection not available for legacy files!");
+        return FALSE;
+    }
+
+    if (wpc->reduced_channels || (wpc->open_flags & OPEN_2CH_MAX)) {
+        strcpy (wpc->error_message, "channel selection not available with OPEN_2CH_MAX!");
+        return FALSE;
+    }
+
+    if (!wpc->config.num_channels) {
+        strcpy (wpc->error_message, "channel selection requires a multichannel file!");
+        return FALSE;
+    }
+
+    // the selection must be made before any samples have been decoded or any seeking has
+    // occurred, otherwise the streams may already be positioned within a block. Note that the
+    // first block is normally loaded (and initialized) at open time but its sample index is 0
+    // until decoding actually begins, so that case is allowed.
+
+    if (wpc->streams)
+        for (i = 0; i < wpc->num_streams; ++i)
+            if (wpc->streams [i] && wpc->streams [i]->sample_index) {
+                strcpy (wpc->error_message, "can't change channel selection after decoding started!");
+                return FALSE;
+            }
+
+    num_channels = wpc->config.num_channels;
+
+    // first build (and validate) the requested identity list, rejecting anything that is not
+    // a valid, unique identity
+
+    for (i = 0; i < num_chan_ids; ++i) {
+        if (!chan_ids [i] || chan_ids [i] == 0xff) {
+            strcpy (wpc->error_message, "invalid channel identity in selection!");
+            return FALSE;
+        }
+
+        for (j = 0; j < i; ++j)
+            if (chan_ids [j] == chan_ids [i]) {
+                strcpy (wpc->error_message, "duplicate channel identity in selection!");
+                return FALSE;
+            }
+    }
+
+    file_ids = (unsigned char *) malloc (num_channels);
+    snapshot = (unsigned char *) malloc (num_channels);
+    chan_select = (int32_t *) calloc (num_channels, sizeof (int32_t));
+    sorted_ids = (unsigned char *) malloc (num_chan_ids);
+
+    if (!file_ids || !snapshot || !chan_select || !sorted_ids) {
+        if (file_ids) free (file_ids);
+        if (snapshot) free (snapshot);
+        if (chan_select) free (chan_select);
+        if (sorted_ids) free (sorted_ids);
+        strcpy (wpc->error_message, "can't allocate memory for channel selection!");
+        return FALSE;
+    }
+
+    compute_channel_identities (num_channels, wpc->config.channel_mask, wpc->channel_identities, file_ids);
+    memcpy (snapshot, file_ids, num_channels);
+
+    // map each requested identity to its file channel, rejecting identities that are missing,
+    // unknown, or ambiguous (present on more than one channel in the file)
+
+    for (i = 0; i < num_chan_ids; ++i) {
+        int found = -1;
+
+        for (j = 0; j < num_channels; ++j)
+            if (file_ids [j] == chan_ids [i]) {
+                if (found >= 0) {
+                    found = -2;
+                    break;
+                }
+
+                found = j;
+            }
+
+        if (found == -1) {
+            free (file_ids); free (snapshot); free (chan_select); free (sorted_ids);
+            strcpy (wpc->error_message, "requested channel identity not found in file!");
+            return FALSE;
+        }
+
+        if (found == -2) {
+            free (file_ids); free (snapshot); free (chan_select); free (sorted_ids);
+            strcpy (wpc->error_message, "requested channel identity is ambiguous in file!");
+            return FALSE;
+        }
+
+        chan_select [found] = i + 1;    // store the requested slot (1-based) for now
+    }
+
+    // build the output mapping in file order: the first selected channel goes to slot 0, and
+    // so on. Also build the selected identities (file order) and mask of Microsoft channels.
+
+    for (i = 0; i < num_channels; ++i) {
+        if (chan_select [i]) {
+            sorted_ids [count] = file_ids [i];
+
+            if (file_ids [i] <= 32)
+                channel_mask |= 1U << (file_ids [i] - 1);
+
+            chan_select [i] = count + 1;
+            count++;
+        }
+    }
+
+    free (file_ids);
+
+    // at this point everything has been validated, so commit the selection to the context.
+    // Note that "snapshot" holds the identities of all channels in the file (including any
+    // unknown ones) and is used to detect layout changes in subsequent blocks.
+
+    free_channel_selection (wpc);
+
+    wpc->chan_select = chan_select;
+    wpc->select_snapshot = snapshot;
+    wpc->select_chan_ids = sorted_ids;
+
+    wpc->select_count = count;
+    wpc->select_channel_mask = channel_mask;
+    wpc->select_file_channels = num_channels;
+    wpc->select_file_mask = wpc->config.channel_mask;
+    wpc->select_error = 0;
+
+    return TRUE;
+}
+
+// Retrieve the channel selection that is currently active, if any. When "chan_ids" is not
+// NULL the identities of the selected channels are copied there (in the order that they are
+// returned by WavpackUnpackSamples()) followed by a NULL terminator, so the caller must
+// provide room for WavpackGetNumChannels() + 1 bytes. The number of selected channels is
+// returned, or 0 if no selection is active (i.e., all channels are being decoded).
+
+int WavpackGetChannelSelection (WavpackContext *wpc, unsigned char *chan_ids)
+{
+    if (!wpc || !wpc->select_count)
+        return 0;
+
+    if (chan_ids) {
+        memcpy (chan_ids, wpc->select_chan_ids, wpc->select_count);
+        chan_ids [wpc->select_count] = 0;
+    }
+
+    return wpc->select_count;
+}
+
+// Verify that the channel layout of the block that was just parsed still matches the layout
+// that the active channel selection was based on. The channel count and channel mask (or,
+// for the new "unlimited streams" form, the channel identities) must match what the selection
+// was made against, otherwise the selected channels could not be applied consistently to the
+// rest of the stream. This must be called after the channel metadata for the block has been
+// parsed (i.e., from unpack_init()). Returns TRUE if the layout matches (or if no selection is
+// active); on a mismatch the error is recorded, the error count is incremented, and decoding
+// is halted by the caller.
+
+int verify_channel_selection_layout (WavpackContext *wpc)
+{
+    WavpackStream *wps = wpc->streams ? wpc->streams [0] : NULL;
+    unsigned char *file_ids;
+    int match = FALSE;
+
+    if (!wpc->select_count)
+        return TRUE;
+
+    // if this block explicitly carried channel info, verify the count and mask directly from
+    // that metadata; otherwise the context values (which may have been inherited from an
+    // earlier block) describe the layout
+
+    if (wps && wps->blk_channel_info_seen)
+        match = (wps->blk_num_channels == wpc->select_file_channels &&
+            wps->blk_channel_mask == wpc->select_file_mask);
+    else
+        match = (wpc->config.num_channels == wpc->select_file_channels &&
+            wpc->config.channel_mask == wpc->select_file_mask);
+
+    // verify the full identity list against the snapshot taken when the selection was made,
+    // preferring the identities carried by this block (if any)
+
+    if (match) {
+        unsigned char *non_ms_ids = (wps && wps->blk_chan_ids_seen) ? wps->blk_chan_ids : wpc->channel_identities;
+
+        file_ids = (unsigned char *) malloc (wpc->select_file_channels);
+
+        if (file_ids) {
+            compute_channel_identities (wpc->select_file_channels, wpc->config.channel_mask,
+                non_ms_ids, file_ids);
+
+            match = (memcmp (file_ids, wpc->select_snapshot, wpc->select_file_channels) == 0);
+            free (file_ids);
+        }
+    }
+
+    if (!match) {
+        strcpy (wpc->error_message, "channel layout changed within file!");
+        wpc->select_error = 1;      // the caller (unpack layer) counts the error
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 // For local use only. Install a callback to be executed when WavpackCloseFile() is called,
@@ -422,6 +724,8 @@ WavpackContext *WavpackCloseFile (WavpackContext *wpc)
 
     if (wpc->channel_reordering)
         free (wpc->channel_reordering);
+
+    free_channel_selection (wpc);
 
 #ifndef NO_TAGS
     free_tag (&wpc->m_tag);
@@ -484,20 +788,23 @@ uint32_t WavpackGetNativeSampleRate (WavpackContext *wpc)
 
 // Returns the number of channels of the specified WavPack file. Note that
 // this is the actual number of channels contained in the file even if the
-// OPEN_2CH_MAX flag was specified when the file was opened.
+// OPEN_2CH_MAX flag was specified when the file was opened. However, if a
+// channel selection is active (see WavpackSetChannelSelection()) then this
+// reports the number of channels that will actually be returned.
 
 int WavpackGetNumChannels (WavpackContext *wpc)
 {
-    return wpc ? wpc->config.num_channels : 2;
+    return wpc ? (wpc->select_count ? wpc->select_count : wpc->config.num_channels) : 2;
 }
 
 // Returns the standard Microsoft channel mask for the specified WavPack
 // file. A value of zero indicates that there is no speaker assignment
-// information.
+// information. If a channel selection is active then this reports the mask
+// that describes only the selected channels.
 
 int WavpackGetChannelMask (WavpackContext *wpc)
 {
-    return wpc ? wpc->config.channel_mask : 0;
+    return wpc ? (wpc->select_count ? (int) wpc->select_channel_mask : wpc->config.channel_mask) : 0;
 }
 
 // Return the normalization value for floating point data (valid only
@@ -543,8 +850,12 @@ int WavpackGetBytesPerSample (WavpackContext *wpc)
 
 int WavpackGetReducedChannels (WavpackContext *wpc)
 {
-    if (wpc)
+    if (wpc) {
+        if (wpc->select_count)
+            return wpc->select_count;
+
         return wpc->reduced_channels ? wpc->reduced_channels : wpc->config.num_channels;
+    }
     else
         return 2;
 }
@@ -595,6 +906,12 @@ void free_single_stream (WavpackStream *wps)
     if (wps->dc.shaping_data) {
         free (wps->dc.shaping_data);
         wps->dc.shaping_data = NULL;
+    }
+
+    if (wps->blk_chan_ids) {
+        free (wps->blk_chan_ids);
+        wps->blk_chan_ids = NULL;
+        wps->blk_chan_ids_len = 0;
     }
 
 #ifdef ENABLE_DSD

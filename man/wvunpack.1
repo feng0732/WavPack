@@ -127,6 +127,19 @@ file in same directory as decoded audio file
 .It Fl -caf-be , Fl -caf-le
 force output to big-endian or little-endian Core Audio, extension
 .Dq .caf
+.It Fl -channels Ns = Ns Ar LIST
+decode only the channels specified in the comma-separated
+.Ar LIST ,
+which may contain channel identities (as reported by
+.Fl f
+of the same file: Microsoft channels are 1-18, other channels are 33-254),
+ranges of identities (e.g.,
+.Dq 33-36 ),
+and Microsoft speaker names (e.g.,
+.Dq FL,FR,FC ).
+The selected channels are always output in their original file order regardless
+of the order given here. The request fails (and no output is produced) if any
+identity is missing, unknown, or ambiguous.
 .It Fl d
 delete source file if successful;
 .Sy use with caution!
