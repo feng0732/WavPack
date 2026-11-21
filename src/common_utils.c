@@ -405,6 +405,8 @@ WavpackContext *WavpackCloseFile (WavpackContext *wpc)
     if (wpc->reader && wpc->reader->close && wpc->wvc_in)
         wpc->reader->close (wpc->wvc_in);
 
+    raw_checksum_free (wpc);
+
     WavpackFreeWrapper (wpc);
 
     if (wpc->metadata) {

@@ -160,6 +160,7 @@ add_library(wavpack
     src/entropy_utils.c
     src/extra1.c
     src/extra2.c
+    src/md5.c
     src/open_utils.c
     src/open_filename.c
     src/open_legacy.c
@@ -168,6 +169,7 @@ add_library(wavpack
     src/pack_dns.c
     src/pack_floats.c
     src/pack_utils.c
+    src/raw_checksum.c
     src/read_words.c
     src/tags.c
     src/tag_utils.c
@@ -177,6 +179,7 @@ add_library(wavpack
     src/unpack_utils.c
     src/write_words.c
     src/decorr_tables.h
+    src/md5.h
     src/unpack3.h
     src/wavpack_local.h
     src/wavpack_version.h

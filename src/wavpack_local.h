@@ -12,6 +12,7 @@
 #define WAVPACK_LOCAL_H
 
 #include "wavpack.h"
+#include "md5.h"
 
 #if defined(_WIN32) || (defined(__WATCOMC__) && defined(__OS2__))
 #define strdup(x) _strdup(x)
@@ -299,6 +300,32 @@ typedef struct {
 
 /////////////////////////////// WavPack Context ///////////////////////////////
 
+// This structure holds the state for the raw input checksum feature
+// (OPEN_RAW_CHECKSUM). One RawChecksumStream is maintained for each input
+// stream (the main "wv" stream and the optional "wvc" correction stream) and
+// tracks a running MD5 of the raw bytes exactly as stored in the file, along
+// with enough position information to detect seeks, skips, short reads and
+// re-reads so that the checksum is only reported as final when the entire
+// file has been consumed contiguously from beginning to end.
+
+typedef struct RawChecksumStream {
+    void *real_id;              // the application's stream id (passed through)
+    WavpackMD5_CTX md5;         // running checksum of the contiguous raw data
+    int64_t cur_pos;            // tracked current file position (-1 = unknown)
+    int64_t next_pos;           // offset of first byte not yet in the checksum
+    int64_t error_pos;          // offset where continuity was lost (-1 = none)
+    int discontinuous;          // a seek/skip/read error made the sum not cover the file
+    int eof;                    // a short read (i.e., end of file) was observed
+    struct RawChecksumState *parent;
+} RawChecksumStream;
+
+typedef struct RawChecksumState {
+    WavpackStreamReader64 *real_reader;     // the application's reader callbacks
+    WavpackStreamReader64 wrapper;          // our pass-through (checksumming) reader
+    RawChecksumStream wv, wvc;              // per-stream state (main & correction)
+    int has_wvc;                            // a correction stream was provided
+} RawChecksumState;
+
 // This internal structure holds everything required to encode or decode WavPack
 // files. This is an opaque pointer to clients of libwavpack.
 
@@ -317,6 +344,8 @@ struct WavpackContext {
 
     WavpackStreamReader64 *reader;
     void *wv_in, *wvc_in;
+
+    RawChecksumState *raw_checksum;     // non-NULL only if OPEN_RAW_CHECKSUM was specified
 
     int64_t filelen, file2len, filepos, file2pos, total_samples, initial_index;
     uint32_t crc_errors, first_flags;
@@ -648,6 +677,11 @@ int WavpackGetMD5Sum (WavpackContext *wpc, unsigned char data [16]);
 int WavpackVerifySingleBlock (unsigned char *buffer, int verify_checksum);
 uint32_t read_next_header (WavpackStreamReader64 *reader, void *id, WavpackHeader *wphdr);
 int read_wvc_block (WavpackContext *wpc, int stream);
+
+/////////////////////////// raw input checksum (module: raw_checksum.c) ////////////////////////////
+
+int raw_checksum_init (WavpackContext *wpc);
+void raw_checksum_free (WavpackContext *wpc);
 
 /////////////////////////// high-level packing API and support ////////////////////////////
 // modules: pack_utils.c, pack_floats.c

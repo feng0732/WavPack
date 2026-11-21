@@ -173,6 +173,7 @@
     <ClCompile Include="entropy_utils.c" />
     <ClCompile Include="extra1.c" />
     <ClCompile Include="extra2.c" />
+    <ClCompile Include="md5.c" />
     <ClCompile Include="open_filename.c" />
     <ClCompile Include="open_legacy.c" />
     <ClCompile Include="open_raw.c" />
@@ -182,6 +183,7 @@
     <ClCompile Include="pack_dsd.c" />
     <ClCompile Include="pack_floats.c" />
     <ClCompile Include="pack_utils.c" />
+    <ClCompile Include="raw_checksum.c" />
     <ClCompile Include="read_words.c" />
     <ClCompile Include="tags.c" />
     <ClCompile Include="tag_utils.c" />

@@ -41,6 +41,7 @@ SRCS = common_utils.c &
 	entropy_utils.c &
 	extra1.c &
 	extra2.c &
+	md5.c &
 	open_utils.c &
 	open_filename.c &
 	open_legacy.c &
@@ -49,6 +50,7 @@ SRCS = common_utils.c &
 	pack_dns.c &
 	pack_floats.c &
 	pack_utils.c &
+	raw_checksum.c &
 	read_words.c &
 	tags.c &
 	tag_utils.c &

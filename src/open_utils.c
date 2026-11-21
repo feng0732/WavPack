@@ -54,6 +54,16 @@ WavpackContext *WavpackOpenFileInputEx64 (WavpackStreamReader64 *reader, void *w
     wpc->max_streams = OLD_MAX_STREAMS;     // use this until overwritten with actual number
     wpc->open_flags = flags;
 
+    // if the application wants a checksum of the raw input data, interpose a
+    // pass-through reader that accumulates it (this must be done before any
+    // reads occur, and replaces wpc->reader, wpc->wv_in and wpc->wvc_in)
+
+    if (flags & OPEN_RAW_CHECKSUM)
+        if (!raw_checksum_init (wpc)) {
+            if (error) strcpy (error, "can't allocate memory");
+            return WavpackCloseFile (wpc);
+        }
+
     wpc->filelen = wpc->reader->get_length (wpc->wv_in);
 
 #ifndef NO_TAGS

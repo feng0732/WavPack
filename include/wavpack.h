@@ -331,6 +331,33 @@ WavpackContext *WavpackOpenFileInput (const char *infilename, char *error, int f
                                 // (just affects retrieving wrappers & MD5 checksums)
 #define OPEN_NO_CHECKSUM 0x800  // don't verify block checksums before decoding
 
+// If OPEN_RAW_CHECKSUM is specified when opening a file for decoding, the library
+// accumulates an MD5 checksum of the raw bytes of the input file(s) exactly as
+// they are stored on disk (i.e., every byte consumed from the input stream,
+// including headers, metadata, wrapper bytes and any skipped garbage, whether
+// or not those bytes are actually used for decoding). This is in contrast to
+// the regular MD5 checksum (WavpackGetMD5Sum()) which covers the decoded PCM
+// samples. The accumulated checksum can be queried at any time during or after
+// decoding with WavpackGetRawChecksum() [and WavpackGetRawChecksum2() for the
+// "correction" file], and once the entire input has been consumed contiguously
+// from beginning to end, the returned checksum will match an externally
+// generated MD5 of the file (e.g., md5sum). Note that the decode mode selected
+// (integer PCM, floating point, or DSD converted to PCM) does not affect the
+// raw bytes that are checksummed.
+
+#define OPEN_RAW_CHECKSUM 0x10000 // accumulate MD5 of raw input data during decode
+
+// Return values for WavpackGetRawChecksum() and WavpackGetRawChecksum2(). Note
+// that the checksum is only copied to the caller's buffer when the return value
+// is RAW_CHECKSUM_COMPLETE.
+
+#define RAW_CHECKSUM_NOT_ENABLED    0   // OPEN_RAW_CHECKSUM not specified (or stream not present)
+#define RAW_CHECKSUM_IN_PROGRESS    1   // end of input not reached yet, checksum not final
+#define RAW_CHECKSUM_COMPLETE       2   // raw input consumed contiguously through EOF, checksum final
+#define RAW_CHECKSUM_DISCONTINUOUS  3   // a seek, skip, or read error made it impossible for the
+                                        // checksum to represent the entire stored file (use
+                                        // WavpackGetRawChecksumErrorPos() to locate the position)
+
 // new for multithreaded
 
 #define OPEN_THREADS_SHFT 12     // specify number of additional worker threads here for
@@ -379,6 +406,9 @@ int WavpackGetChannelMask (WavpackContext *wpc);
 int WavpackGetReducedChannels (WavpackContext *wpc);
 int WavpackGetFloatNormExp (WavpackContext *wpc);
 int WavpackGetMD5Sum (WavpackContext *wpc, unsigned char data [16]);
+int WavpackGetRawChecksum (WavpackContext *wpc, unsigned char data [16]);
+int WavpackGetRawChecksum2 (WavpackContext *wpc, unsigned char data [16]);
+int64_t WavpackGetRawChecksumErrorPos (WavpackContext *wpc);
 void WavpackGetChannelIdentities (WavpackContext *wpc, unsigned char *identities);
 uint32_t WavpackGetChannelLayout (WavpackContext *wpc, unsigned char *reorder);
 uint32_t WavpackGetWrapperBytes (WavpackContext *wpc);
